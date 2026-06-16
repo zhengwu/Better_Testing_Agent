@@ -210,7 +210,8 @@ def _degenerate_report(profile: dict[str, Any], design: dict[str, Any],
 def enrich_prose_with_llm(report: dict[str, Any],
                           outcome: str | None = None,
                           predictor: str | None = None,
-                          extra_predictors: list[str] | None = None) -> dict[str, Any]:
+                          extra_predictors: list[str] | None = None,
+                          predictors: list[str] | None = None) -> dict[str, Any]:
     """Replace the deterministic report prose with a live LLM-generated version.
 
     Calls the configured LLM provider to rewrite `plain_language_summary` and
@@ -230,7 +231,14 @@ def enrich_prose_with_llm(report: dict[str, Any],
             return str(v)
 
     var_context = ""
-    if outcome and predictor:
+    if outcome and predictors and len(predictors) >= 2:
+        var_context = (
+            f"Multiple regression model: outcome = {outcome}, "
+            f"predictors jointly modelled = {', '.join(predictors)}. "
+            "Interpret the effect size as overall model fit (R² or McFadden's R²), "
+            "and per-predictor estimates as conditional (adjusted) effects."
+        )
+    elif outcome and predictor:
         var_context = f"Primary test pair: {outcome} (outcome) × {predictor} (predictor). "
         if extra_predictors:
             var_context += (

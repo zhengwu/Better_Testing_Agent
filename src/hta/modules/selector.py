@@ -93,9 +93,29 @@ def select(
     predictor: str | None,
     prompt: str,
     raw: dict[str, list[str]],
+    predictors: list[str] | None = None,
 ) -> Selection:
     oc = cols[outcome]
     measurement = "WITHIN" if _WITHIN_RE.search(prompt) else "BETWEEN"
+
+    # Multi-predictor regression routing: when 2+ numeric predictors are supplied and
+    # there is no grouping variable, route to the appropriate regression family.
+    # COUNT outcomes still go to Poisson/NegBin (below), but the formula will use all predictors.
+    if predictors and len(predictors) >= 2 and not group:
+        n_pred = len(predictors)
+        pred_list = ", ".join(predictors)
+        if oc.var_type in ("CONTINUOUS", "ORDINAL"):
+            return Selection(
+                "LINEAR_REGRESSION",
+                f"{n_pred} numeric predictors ({pred_list}) with a continuous outcome "
+                f"→ multiple linear regression (OLS). R² measures overall model fit.",
+            )
+        if oc.var_type in ("BINARY", "CATEGORICAL"):
+            return Selection(
+                "LOGISTIC_REGRESSION",
+                f"{n_pred} numeric predictors ({pred_list}) with a binary/categorical outcome "
+                f"→ logistic regression (MLE). McFadden's R² and per-predictor ORs reported.",
+            )
 
     # Healthcare dispatch (subset): COUNT outcome → Poisson / NegBin.
     if oc.var_type == "COUNT" and oc.numeric:

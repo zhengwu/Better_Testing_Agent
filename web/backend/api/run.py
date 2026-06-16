@@ -146,16 +146,29 @@ async def _run_live(session_id: str) -> object:
     cols = {c: profile_column(c, df[c].apply(str).tolist()) for c in df.columns}
     raw = {c: df[c].apply(str).tolist() for c in df.columns}
     sel_vars = variables.get("selected_variables") or []
-    pool = [v for v in sel_vars if v != outcome] if len(sel_vars) >= 3 else None
-    predictor = (variables.get("predictor_variable") or None) or _choose_predictor(df, cols, outcome, group, pool=pool)
-    # Extra pool members not chosen as the primary predictor — shown as supplementary plots.
-    extra_predictors = [v for v in (pool or []) if v != predictor] or None
+    # When 3+ variables are selected (no group), the full pool becomes the predictor list
+    # for multi-predictor regression.  For 1–2 vars we keep the single-predictor path.
+    pool = [v for v in sel_vars if v != outcome and v != group] if sel_vars else []
+    multi_predictor_mode = len(pool) >= 2 and not group
+    if multi_predictor_mode:
+        # All pool members are jointly modelled; no single "best" predictor needed.
+        predictors_list: list[str] | None = [
+            v for v in pool if v in cols and cols[v].var_type in _NUMERIC_TYPES
+        ]
+        predictor = predictors_list[0] if predictors_list else None
+        extra_predictors = list(predictors_list[1:]) if predictors_list else None
+    else:
+        predictors_list = None
+        predictor = (variables.get("predictor_variable") or None) or _choose_predictor(
+            df, cols, outcome, group, pool=pool or None)
+        extra_predictors = [v for v in pool if v != predictor] or None
 
     # ── Step B: select test ───────────────────────────────────────────────────
     yield _sse({"type": "progress", "stage": "selecting_test",
                 "message": "Selecting statistical test…"})
     await asyncio.sleep(0)
-    selection = select(cols, outcome, group, predictor, hypothesis, raw)
+    selection = select(cols, outcome, group, predictor, hypothesis, raw,
+                       predictors=predictors_list)
     test_name = selection.test
     if test_name in ("—", "", None):
         # Defensive fallback: pick a sensible test from what we have.
@@ -166,7 +179,8 @@ async def _run_live(session_id: str) -> object:
     yield _sse({"type": "progress", "stage": "executing_test",
                 "message": f"Running {test_name.replace('_', ' ').title()}…"})
     await asyncio.sleep(0)
-    test_result = execute(test_name, df, outcome, group, predictor, design, selection)
+    test_result = execute(test_name, df, outcome, group, predictor, design, selection,
+                          predictors=predictors_list)
 
     # ── Step D: report ────────────────────────────────────────────────────────
     yield _sse({"type": "progress", "stage": "generating_report",
@@ -186,7 +200,9 @@ async def _run_live(session_id: str) -> object:
     from functools import partial as _partial
     report = await loop.run_in_executor(
         None, _partial(enrich_prose_with_llm, report,
-                       outcome=outcome, predictor=predictor, extra_predictors=extra_predictors))
+                       outcome=outcome, predictor=predictor,
+                       extra_predictors=extra_predictors,
+                       predictors=predictors_list))
 
     store.write_json(session_id, "report.json", report)
     store.set_status(session_id, "COMPLETE")
@@ -232,9 +248,19 @@ async def preview_test(session_id: str) -> dict[str, Any]:
     cols = {c: profile_column(c, df[c].apply(str).tolist()) for c in df.columns}
     raw = {c: df[c].apply(str).tolist() for c in df.columns}
     sel_vars = variables.get("selected_variables") or []
-    pool = [v for v in sel_vars if v != outcome] if len(sel_vars) >= 3 else None
-    predictor = (variables.get("predictor_variable") or None) or _choose_predictor(df, cols, outcome, group, pool=pool)
-    selection = select(cols, outcome, group, predictor, hypothesis, raw)
+    pool = [v for v in sel_vars if v != outcome and v != group] if sel_vars else []
+    multi_pred = len(pool) >= 2 and not group
+    if multi_pred:
+        predictors_list: list[str] | None = [
+            v for v in pool if v in cols and cols[v].var_type in _NUMERIC_TYPES
+        ]
+        predictor = predictors_list[0] if predictors_list else None
+    else:
+        predictors_list = None
+        predictor = (variables.get("predictor_variable") or None) or _choose_predictor(
+            df, cols, outcome, group, pool=pool or None)
+    selection = select(cols, outcome, group, predictor, hypothesis, raw,
+                       predictors=predictors_list)
 
     return {
         "test_name": selection.test,

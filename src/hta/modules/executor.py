@@ -780,26 +780,41 @@ def _corr_checks(
                         f"n = {len(x)} paired observations.")]
 
 
+def _formula_term(col: str) -> str:
+    """Wrap a column name in Q() so statsmodels handles spaces and special chars."""
+    return f"Q('{col}')"
+
+
+_Q_RE = __import__("re").compile(r"Q\('(.+?)'\)")
+
+
+def _clean_param_name(name: str) -> str:
+    """Strip statsmodels Q('...') quoting from a parameter label."""
+    m = _Q_RE.fullmatch(name.strip())
+    return m.group(1) if m else name
+
+
 def _glm_count(df: pd.DataFrame, outcome: str, regressor: Optional[str],
-               neg_binom: bool) -> dict[str, Any]:
-    import statsmodels.api as sm
+               neg_binom: bool,
+               regressors: Optional[list[str]] = None) -> dict[str, Any]:
     import statsmodels.formula.api as smf
+    import statsmodels.api as sm
     name = "NEGATIVE_BINOMIAL_REGRESSION" if neg_binom else "POISSON_REGRESSION"
-    if not regressor:
+    preds = regressors if regressors and len(regressors) >= 2 else (
+        [regressor] if regressor else []
+    )
+    if not preds:
         return _not_implemented(name)
-    d = df[[outcome, regressor]].copy()
-    d.columns = ["_y", "_x"]
-    d["_y"] = pd.to_numeric(d["_y"], errors="coerce")
+    cols_needed = [outcome] + preds
+    d = df[cols_needed].copy()
+    d[outcome] = pd.to_numeric(d[outcome], errors="coerce")
+    for p in preds:
+        d[p] = pd.to_numeric(d[p], errors="coerce")
     d = d.dropna()
-    if len(d) < 5:
+    if len(d) < max(5, len(preds) + 2):
         return _not_implemented(name)
-    numeric_x = pd.api.types.is_numeric_dtype(pd.to_numeric(d["_x"], errors="coerce")) and \
-        pd.to_numeric(d["_x"], errors="coerce").notna().all()
-    if numeric_x:
-        d["_x"] = pd.to_numeric(d["_x"], errors="coerce")
-        formula = "_y ~ _x"
-    else:
-        formula = "_y ~ C(_x)"
+    rhs = " + ".join(_formula_term(p) for p in preds)
+    formula = f"{_formula_term(outcome)} ~ {rhs}"
     family = sm.families.NegativeBinomial() if neg_binom else sm.families.Poisson()
     try:
         model = smf.glm(formula, data=d, family=family).fit()
@@ -808,11 +823,13 @@ def _glm_count(df: pd.DataFrame, outcome: str, regressor: Optional[str],
     params = model.params.drop("Intercept", errors="ignore")
     if len(params) == 0:
         return _not_implemented(name)
+    # Primary effect: first (or only) predictor; log model-level deviance p as omnibus
     key = params.index[0]
     coef = float(params.iloc[0])
     irr = math.exp(coef)
-    conf = model.conf_int().loc[key]
-    irr_lo, irr_hi = math.exp(float(conf.iloc[0])), math.exp(float(conf.iloc[1]))
+    conf = model.conf_int()
+    irr_lo = math.exp(float(conf.loc[key].iloc[0]))
+    irr_hi = math.exp(float(conf.loc[key].iloc[1]))
     p = float(model.pvalues[key])
     stat = float(model.tvalues[key])
     checks = [_check("Count outcome", "MET", "Outcome treated as non-negative counts."),
@@ -820,9 +837,183 @@ def _glm_count(df: pd.DataFrame, outcome: str, regressor: Optional[str],
                      "MET" if neg_binom else "MARGINAL",
                      "Negative-binomial relaxes the variance = mean assumption." if neg_binom
                      else "Verify variance ≈ mean; prefer negative binomial if overdispersed.")]
+    notes = [f"IRR = exp(β) for {preds[0]}; CI back-transformed from the log scale."]
+    if len(preds) > 1:
+        extra = []
+        for k in params.index[1:]:
+            try:
+                irr_k = math.exp(float(params[k]))
+                p_k = float(model.pvalues[k])
+                label = _clean_param_name(k)
+                extra.append(f"{label}: IRR={irr_k:.3f} (p={_fmt_p(p_k)})")
+            except Exception:
+                pass
+        if extra:
+            notes.append("Other predictors — " + "; ".join(extra) + ".")
     return _result(name, stat, p, None, "incidence-rate ratio", irr, "ratio",
-                   irr_lo, irr_hi, checks, (irr_lo, irr_hi),
-                   [f"IRR = exp(β) for {regressor}; CI back-transformed from the log scale."])
+                   irr_lo, irr_hi, checks, (irr_lo, irr_hi), notes)
+
+
+def _linear_regression(df: pd.DataFrame, outcome: str,
+                       predictors: list[str]) -> dict[str, Any]:
+    """Multiple linear regression (OLS) via statsmodels.
+
+    Reports the overall model F-test and R², with per-predictor coefficients and
+    standardised betas in the notes. Effect size is R² (treated as eta² for interpretation).
+    """
+    import statsmodels.formula.api as smf
+    cols_needed = [outcome] + predictors
+    d = df[cols_needed].copy()
+    for col in cols_needed:
+        d[col] = pd.to_numeric(d[col], errors="coerce")
+    d = d.dropna()
+    n_min = len(predictors) + 2
+    if len(d) < max(10, n_min):
+        return _not_implemented("LINEAR_REGRESSION")
+    rhs = " + ".join(_formula_term(p) for p in predictors)
+    formula = f"{_formula_term(outcome)} ~ {rhs}"
+    try:
+        model = smf.ols(formula, data=d).fit()
+    except Exception:
+        return _not_implemented("LINEAR_REGRESSION")
+    r2 = float(model.rsquared)
+    r2_adj = float(model.rsquared_adj)
+    f_stat = float(model.fvalue) if model.fvalue is not None else 0.0
+    f_p = float(model.f_pvalue) if model.f_pvalue is not None else 1.0
+    n, k = len(d), len(predictors)
+    # Cohen's f² = R² / (1 − R²) — "large" if f² ≥ 0.35 (Cohen 1988)
+    f2 = r2 / (1 - r2) if r2 < 1.0 else float("inf")
+    # Bootstrap CI for R²
+    rng = random.Random(BOOTSTRAP_SEED)
+    boot_r2: list[float] = []
+    for _ in range(N_BOOTSTRAP):
+        idx = [rng.randrange(n) for _ in range(n)]
+        sub = d.iloc[idx]
+        try:
+            import statsmodels.formula.api as _smf
+            m = _smf.ols(formula, data=sub).fit()
+            v = float(m.rsquared)
+            if math.isfinite(v):
+                boot_r2.append(v)
+        except Exception:
+            pass
+    boot_r2.sort()
+    ci_lo = _pct(boot_r2, 0.025) if boot_r2 else 0.0
+    ci_hi = _pct(boot_r2, 0.975) if boot_r2 else r2
+    # Assumption checks
+    checks = [
+        _check("Minimum sample size", "MET" if n >= 10 else "VIOLATED",
+               f"n = {n}, {k} predictors (need n > 10·k for reliable estimates)."),
+        _check("Independence of observations", "UNTESTABLE", "Assumed by design."),
+        _check("Linearity / homoscedasticity", "UNTESTABLE",
+               "Inspect residual vs. fitted and Q–Q plots."),
+    ]
+    # Per-predictor coefficient table in notes
+    coef_lines: list[str] = []
+    params = model.params.drop("Intercept", errors="ignore")
+    pvals = model.pvalues.drop("Intercept", errors="ignore")
+    conf = model.conf_int().drop("Intercept", errors="ignore")
+    for col_k in params.index:
+        b = float(params[col_k])
+        p_k = float(pvals[col_k])
+        lo_k = float(conf.loc[col_k].iloc[0])
+        hi_k = float(conf.loc[col_k].iloc[1])
+        label = _clean_param_name(col_k)
+        coef_lines.append(f"{label}: β={b:.3f} [{lo_k:.3f}, {hi_k:.3f}] p={_fmt_p(p_k)}")
+    notes = [
+        f"OLS regression: outcome = {outcome}, {k} predictors.",
+        f"Model: R² = {r2:.3f}, adjusted R² = {r2_adj:.3f}, F({k}, {n - k - 1}) = {f_stat:.2f}, p = {_fmt_p(f_p)}.",
+        f"Cohen's f² = {f2:.3f} (large ≥ 0.35).",
+        "Per-predictor (unstandardised β, 95% CI, p): " + "; ".join(coef_lines) + ".",
+    ]
+    return _result("LINEAR_REGRESSION", f_stat, f_p, float(n - k - 1),
+                   "R²", r2, "eta2", ci_lo, ci_hi, checks, (ci_lo, ci_hi), notes)
+
+
+def _logistic_regression(df: pd.DataFrame, outcome: str,
+                         predictors: list[str]) -> dict[str, Any]:
+    """Binary logistic regression (MLE) via statsmodels.
+
+    Reports McFadden's pseudo-R², the overall likelihood-ratio test, and per-predictor
+    odds ratios with 95% CIs and Wald p-values.
+    """
+    import statsmodels.formula.api as smf
+    cols_needed = [outcome] + predictors
+    d = df[cols_needed].copy()
+    for col in cols_needed:
+        d[col] = pd.to_numeric(d[col], errors="coerce")
+    d = d.dropna()
+    if len(d) < max(10, len(predictors) + 2):
+        return _not_implemented("LOGISTIC_REGRESSION")
+    # Map outcome to 0/1 (two unique numeric values required)
+    uniq = sorted(d[outcome].unique())
+    if len(uniq) != 2:
+        return _not_implemented("LOGISTIC_REGRESSION")
+    d = d.copy()
+    d["_y01"] = (d[outcome] == uniq[1]).astype(int)
+    rhs = " + ".join(_formula_term(p) for p in predictors)
+    formula = f"_y01 ~ {rhs}"
+    try:
+        model = smf.logit(formula, data=d).fit(disp=0)
+    except Exception:
+        return _not_implemented("LOGISTIC_REGRESSION")
+    # McFadden's pseudo-R²
+    ll_model = float(model.llf)
+    ll_null = float(model.llnull)
+    mcfadden = 1.0 - (ll_model / ll_null) if ll_null != 0 else 0.0
+    mcfadden = max(0.0, mcfadden)
+    # Overall LR test p-value
+    lr_stat = -2.0 * (ll_null - ll_model)
+    from scipy.stats import chi2 as _chi2
+    lr_p = float(1.0 - _chi2.cdf(lr_stat, df=len(predictors)))
+    n, k = len(d), len(predictors)
+    # Bootstrap CI for McFadden's R²
+    rng = random.Random(BOOTSTRAP_SEED)
+    boot_r2: list[float] = []
+    for _ in range(N_BOOTSTRAP):
+        idx = [rng.randrange(n) for _ in range(n)]
+        sub = d.iloc[idx]
+        if sub["_y01"].nunique() < 2:
+            continue
+        try:
+            import statsmodels.formula.api as _smf
+            m = _smf.logit(formula, data=sub).fit(disp=0)
+            v = max(0.0, 1.0 - float(m.llf) / float(m.llnull)) if m.llnull != 0 else 0.0
+            if math.isfinite(v):
+                boot_r2.append(v)
+        except Exception:
+            pass
+    boot_r2.sort()
+    ci_lo = _pct(boot_r2, 0.025) if boot_r2 else 0.0
+    ci_hi = _pct(boot_r2, 0.975) if boot_r2 else mcfadden
+    checks = [
+        _check("Binary outcome", "MET",
+               f"Outcome mapped to 0 ({uniq[0]}) / 1 ({uniq[1]})."),
+        _check("Minimum sample size", "MET" if n >= 10 else "VIOLATED",
+               f"n = {n}, {k} predictors."),
+        _check("Complete separation", "UNTESTABLE",
+               "Check for perfect separation if the model fails to converge."),
+    ]
+    # Per-predictor OR table
+    params = model.params.drop("Intercept", errors="ignore")
+    pvals = model.pvalues.drop("Intercept", errors="ignore")
+    conf = model.conf_int().drop("Intercept", errors="ignore")
+    coef_lines: list[str] = []
+    for col_k in params.index:
+        b = float(params[col_k])
+        p_k = float(pvals[col_k])
+        or_k = math.exp(b)
+        lo_k = math.exp(float(conf.loc[col_k].iloc[0]))
+        hi_k = math.exp(float(conf.loc[col_k].iloc[1]))
+        label = _clean_param_name(col_k)
+        coef_lines.append(f"{label}: OR={or_k:.3f} [{lo_k:.3f}, {hi_k:.3f}] p={_fmt_p(p_k)}")
+    notes = [
+        f"Logistic regression: outcome = {outcome} (1 = '{uniq[1]}'), {k} predictors.",
+        f"Model: McFadden's R² = {mcfadden:.3f}, LR χ²({k}) = {lr_stat:.2f}, p = {_fmt_p(lr_p)}.",
+        "Per-predictor odds ratios (OR, 95% CI, p): " + "; ".join(coef_lines) + ".",
+    ]
+    return _result("LOGISTIC_REGRESSION", lr_stat, lr_p, float(k),
+                   "McFadden's R²", mcfadden, "eta2", ci_lo, ci_hi, checks, (ci_lo, ci_hi), notes)
 
 
 # ── survival (§6.5b) and diagnostic accuracy (§6.5c) ─────────────────────────
@@ -1040,6 +1231,7 @@ def _adjusted_estimate(test_name: str, df: pd.DataFrame, outcome: str,
 def _dispatch(
     test_name: str, df: pd.DataFrame, outcome: str, group: Optional[str],
     predictor: Optional[str], selection: Any,
+    predictors: Optional[list[str]] = None,
 ) -> dict[str, Any]:
     if test_name == "WELCH_T":
         return _two_sample_t(df, outcome, group, equal_var=False)  # type: ignore[arg-type]
@@ -1070,9 +1262,21 @@ def _dispatch(
     if test_name == "MAXBET":
         return _maxbet(df, outcome, predictor)                     # type: ignore[arg-type]
     if test_name == "POISSON_REGRESSION":
-        return _glm_count(df, outcome, predictor or group, neg_binom=False)
+        return _glm_count(df, outcome, predictor or group, neg_binom=False,
+                          regressors=predictors)
     if test_name == "NEGATIVE_BINOMIAL_REGRESSION":
-        return _glm_count(df, outcome, predictor or group, neg_binom=True)
+        return _glm_count(df, outcome, predictor or group, neg_binom=True,
+                          regressors=predictors)
+    if test_name == "LINEAR_REGRESSION":
+        preds = predictors or ([predictor] if predictor else None)
+        if not preds:
+            return _not_implemented("LINEAR_REGRESSION")
+        return _linear_regression(df, outcome, preds)
+    if test_name == "LOGISTIC_REGRESSION":
+        preds = predictors or ([predictor] if predictor else None)
+        if not preds:
+            return _not_implemented("LOGISTIC_REGRESSION")
+        return _logistic_regression(df, outcome, preds)
     if test_name == "LOG_RANK":
         ev = _find_event_column(df, {outcome, group or "", predictor or ""})
         return _logrank(df, outcome, group, ev) if (ev and group) else _not_implemented("LOG_RANK")
@@ -1082,7 +1286,6 @@ def _dispatch(
         return _cox(df, outcome, cov, ev) if (ev and cov) else _not_implemented("COX_REGRESSION")
     if test_name == "ROC_AUC":
         return _roc_auc(df, outcome, predictor) if predictor else _not_implemented("ROC_AUC")
-    # Reserved regressions / mixed models are in the enum but not selectable in v0.1.0.
     return _not_implemented(test_name)
 
 
@@ -1096,30 +1299,36 @@ def execute(
     predictor: Optional[str],
     design: Any = None,
     selection: Any = None,
+    predictors: Optional[list[str]] = None,
 ) -> TestResult:
     """Run `test` on the data and return a validated `TestResult`.
 
-    Raises `ValueError` if `test` is not a recognised `StatisticalTest`; any error from the
-    individual test is caught and surfaced as an UNTESTABLE result so the pipeline still
-    produces a report.
+    `predictors` (optional list) enables multi-predictor regression; when present it
+    takes precedence over the single `predictor` argument for regression tests.
+
+    Raises `ValueError` if `test` is not a recognised `StatisticalTest`; any error from
+    the individual test is caught and surfaced as an UNTESTABLE result so the pipeline
+    still produces a report.
     """
     test_name = test.value if isinstance(test, StatisticalTest) else str(test)
     # Validate up front: an unknown name cannot populate the strict `test_used` enum.
     StatisticalTest(test_name)
     try:
-        d = _dispatch(test_name, df, outcome, group, predictor, selection)
+        d = _dispatch(test_name, df, outcome, group, predictor, selection, predictors)
     except Exception as exc:  # never crash the whole run on a single-test failure
         d = _result(test_name, 0.0, 1.0, None, "—", 0.0, "r", 0.0, 0.0,
                     [_check("Execution", "UNTESTABLE", f"Test failed: {exc}")],
                     (0.0, 0.0), [f"Execution error: {exc}"])
         return TestResult.model_validate(d)
-    # Confounder adjustment (§5.3) — best-effort; never let it sink the primary result.
-    try:
-        exclude = {x for x in (outcome, group, predictor) if x}
-        covars = usable_adjustment_covariates(design, df, exclude)
-        note = _adjusted_estimate(test_name, df, outcome, group, predictor, covars)
-        if note:
-            d["notes"].append(note)
-    except Exception:
-        pass
+    # Confounder adjustment (§5.3) — skip for regression (confounders are already in the model).
+    if test_name not in ("LINEAR_REGRESSION", "LOGISTIC_REGRESSION",
+                         "POISSON_REGRESSION", "NEGATIVE_BINOMIAL_REGRESSION"):
+        try:
+            exclude = {x for x in (outcome, group, predictor) if x}
+            covars = usable_adjustment_covariates(design, df, exclude)
+            note = _adjusted_estimate(test_name, df, outcome, group, predictor, covars)
+            if note:
+                d["notes"].append(note)
+        except Exception:
+            pass
     return TestResult.model_validate(d)

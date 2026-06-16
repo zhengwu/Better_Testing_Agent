@@ -48,10 +48,12 @@ def execute(
     predictor: Optional[str],
     design: dict[str, Any],
     selection: Any,
+    predictors: Optional[list[str]] = None,
 ) -> dict[str, Any]:
     """Run `test_name` and return a TestResult-shaped dict."""
     try:
-        result = _execute(test_name, df, outcome, group, predictor, design, selection)
+        result = _execute(test_name, df, outcome, group, predictor, design, selection,
+                          predictors=predictors)
     except Exception as exc:
         return _error_result(test_name, f"{test_name or 'no test'} could not be run: {exc}")
     return result.model_dump(mode="json")

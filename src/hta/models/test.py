@@ -34,11 +34,12 @@ class StatisticalTest(str, Enum):
     COX_REGRESSION = "COX_REGRESSION"  # survival with covariate adjustment (hazard ratio)
     # Diagnostic-accuracy evaluation — discrimination via the ROC area under the curve.
     ROC_AUC = "ROC_AUC"  # AUC with DeLong CI; DeLong test to compare two AUCs
-    # Reserved — present in the enum but NOT reachable from the §6 decision tree in v0.1.0.
-    LINEAR_REGRESSION = "LINEAR_REGRESSION"
-    LOGISTIC_REGRESSION = "LOGISTIC_REGRESSION"
-    LINEAR_MIXED_MODEL = "LINEAR_MIXED_MODEL"  # clustered/longitudinal (subject-level); v0.2.0
-    GENERALIZED_ESTIMATING_EQUATIONS = "GENERALIZED_ESTIMATING_EQUATIONS"  # marginal; v0.2.0
+    # Multiple-predictor regression — selectable when 2+ predictors are provided.
+    LINEAR_REGRESSION = "LINEAR_REGRESSION"    # continuous outcome, OLS; effect size = R²
+    LOGISTIC_REGRESSION = "LOGISTIC_REGRESSION"  # binary outcome, MLE; effect size = McFadden's R²
+    # Reserved for v0.2.0 — clustered / longitudinal data.
+    LINEAR_MIXED_MODEL = "LINEAR_MIXED_MODEL"
+    GENERALIZED_ESTIMATING_EQUATIONS = "GENERALIZED_ESTIMATING_EQUATIONS"
 
 
 class AssumptionStatus(str, Enum):
