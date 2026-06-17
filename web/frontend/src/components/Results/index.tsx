@@ -1,5 +1,5 @@
 import ReactMarkdown from 'react-markdown'
-import type { Report } from '../../types/api'
+import type { Report, CoefficientRow } from '../../types/api'
 import { AssumptionBadge, CaveatBadge, SignificanceBadge } from '../shared/Badge'
 import { CopyButton } from '../shared/CopyButton'
 import { exportHtmlUrl } from '../../api/client'
@@ -15,6 +15,8 @@ const TEST_LABELS: Record<string, string> = {
   MAXBET: 'MaxBET (nonlinear independence)',
   WELCH_ANOVA: "Welch's ANOVA",
   POISSON_REGRESSION: 'Poisson regression', NEGATIVE_BINOMIAL_REGRESSION: 'Negative binomial regression',
+  LINEAR_REGRESSION: 'Multiple linear regression',
+  LOGISTIC_REGRESSION: 'Logistic regression',
 }
 
 const STAT_LABELS: Record<string, string> = {
@@ -25,10 +27,51 @@ const STAT_LABELS: Record<string, string> = {
   PEARSON_CORRELATION: 'r', SPEARMAN_CORRELATION: 'ρ',
   MAXBET: 'Z',
   POISSON_REGRESSION: 'z', NEGATIVE_BINOMIAL_REGRESSION: 'z',
+  LINEAR_REGRESSION: 'F', LOGISTIC_REGRESSION: 'LR χ²',
 }
 
 function fmt(n: number, decimals = 3) {
   return n.toFixed(decimals)
+}
+
+function fmtP(p: number) {
+  return p < 0.001 ? '< 0.001' : p.toFixed(3)
+}
+
+function CoefficientTable({ rows, testUsed }: { rows: CoefficientRow[]; testUsed: string }) {
+  const isLogistic = testUsed === 'LOGISTIC_REGRESSION'
+  const estimateLabel = isLogistic ? 'OR' : 'β'
+  return (
+    <div className="bg-white rounded-xl border border-slate-200 p-6 overflow-x-auto">
+      <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-3">
+        Per-predictor coefficients
+      </p>
+      <table className="w-full text-sm border-collapse">
+        <thead>
+          <tr className="text-left text-xs text-slate-500 border-b border-slate-200">
+            <th className="pb-2 pr-4 font-medium">Predictor</th>
+            <th className="pb-2 pr-4 font-medium">{estimateLabel}</th>
+            <th className="pb-2 pr-4 font-medium">95% CI</th>
+            <th className="pb-2 font-medium">p-value</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((row, i) => (
+            <tr key={i} className="border-b border-slate-100 last:border-0">
+              <td className="py-2 pr-4 font-medium text-slate-800">{row.predictor}</td>
+              <td className="py-2 pr-4 text-slate-700">{fmt(row.estimate, 3)}</td>
+              <td className="py-2 pr-4 text-slate-700">
+                [{fmt(row.ci_lower, 3)}, {fmt(row.ci_upper, 3)}]
+              </td>
+              <td className={`py-2 font-medium ${row.p_value < 0.05 ? 'text-green-700' : 'text-slate-700'}`}>
+                {fmtP(row.p_value)}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  )
 }
 
 interface Props { report: Report; sessionId: string }
@@ -164,6 +207,11 @@ export default function ResultsView({ report, sessionId }: Props) {
             <p key={i} className="mt-3 text-xs text-slate-500 bg-slate-50 px-3 py-2 rounded-lg">{n}</p>
           ))}
         </div>
+
+        {/* Coefficient table (regression tests only) */}
+        {tr.coefficient_table && tr.coefficient_table.length > 0 && (
+          <CoefficientTable rows={tr.coefficient_table} testUsed={tr.test_used} />
+        )}
 
         {/* Plain-language summary */}
         <div className="bg-indigo-50 rounded-xl border border-indigo-200 p-6">

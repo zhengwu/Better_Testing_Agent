@@ -98,3 +98,4 @@ class TestResult(BaseModel):
     is_significant: bool  # p_value < 0.05
     power: Optional[float] = None
     notes: list[str] = Field(default_factory=list)
+    coefficient_table: Optional[list[dict]] = None

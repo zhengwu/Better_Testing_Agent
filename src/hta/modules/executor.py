@@ -908,11 +908,12 @@ def _linear_regression(df: pd.DataFrame, outcome: str,
         _check("Linearity / homoscedasticity", "UNTESTABLE",
                "Inspect residual vs. fitted and Q–Q plots."),
     ]
-    # Per-predictor coefficient table in notes
-    coef_lines: list[str] = []
+    # Per-predictor coefficient table
     params = model.params.drop("Intercept", errors="ignore")
     pvals = model.pvalues.drop("Intercept", errors="ignore")
     conf = model.conf_int().drop("Intercept", errors="ignore")
+    coef_lines: list[str] = []
+    coefficient_table: list[dict] = []
     for col_k in params.index:
         b = float(params[col_k])
         p_k = float(pvals[col_k])
@@ -920,14 +921,23 @@ def _linear_regression(df: pd.DataFrame, outcome: str,
         hi_k = float(conf.loc[col_k].iloc[1])
         label = _clean_param_name(col_k)
         coef_lines.append(f"{label}: β={b:.3f} [{lo_k:.3f}, {hi_k:.3f}] p={_fmt_p(p_k)}")
+        coefficient_table.append({
+            "predictor": label,
+            "estimate": round(b, 4),
+            "ci_lower": round(lo_k, 4),
+            "ci_upper": round(hi_k, 4),
+            "p_value": round(p_k, 4),
+        })
     notes = [
         f"OLS regression: outcome = {outcome}, {k} predictors.",
         f"Model: R² = {r2:.3f}, adjusted R² = {r2_adj:.3f}, F({k}, {n - k - 1}) = {f_stat:.2f}, p = {_fmt_p(f_p)}.",
         f"Cohen's f² = {f2:.3f} (large ≥ 0.35).",
         "Per-predictor (unstandardised β, 95% CI, p): " + "; ".join(coef_lines) + ".",
     ]
-    return _result("LINEAR_REGRESSION", f_stat, f_p, float(n - k - 1),
-                   "R²", r2, "eta2", ci_lo, ci_hi, checks, (ci_lo, ci_hi), notes)
+    result = _result("LINEAR_REGRESSION", f_stat, f_p, float(n - k - 1),
+                     "R²", r2, "eta2", ci_lo, ci_hi, checks, (ci_lo, ci_hi), notes)
+    result["coefficient_table"] = coefficient_table
+    return result
 
 
 def _logistic_regression(df: pd.DataFrame, outcome: str,
@@ -999,6 +1009,7 @@ def _logistic_regression(df: pd.DataFrame, outcome: str,
     pvals = model.pvalues.drop("Intercept", errors="ignore")
     conf = model.conf_int().drop("Intercept", errors="ignore")
     coef_lines: list[str] = []
+    coefficient_table: list[dict] = []
     for col_k in params.index:
         b = float(params[col_k])
         p_k = float(pvals[col_k])
@@ -1007,13 +1018,22 @@ def _logistic_regression(df: pd.DataFrame, outcome: str,
         hi_k = math.exp(float(conf.loc[col_k].iloc[1]))
         label = _clean_param_name(col_k)
         coef_lines.append(f"{label}: OR={or_k:.3f} [{lo_k:.3f}, {hi_k:.3f}] p={_fmt_p(p_k)}")
+        coefficient_table.append({
+            "predictor": label,
+            "estimate": round(or_k, 4),
+            "ci_lower": round(lo_k, 4),
+            "ci_upper": round(hi_k, 4),
+            "p_value": round(p_k, 4),
+        })
     notes = [
         f"Logistic regression: outcome = {outcome} (1 = '{uniq[1]}'), {k} predictors.",
         f"Model: McFadden's R² = {mcfadden:.3f}, LR χ²({k}) = {lr_stat:.2f}, p = {_fmt_p(lr_p)}.",
         "Per-predictor odds ratios (OR, 95% CI, p): " + "; ".join(coef_lines) + ".",
     ]
-    return _result("LOGISTIC_REGRESSION", lr_stat, lr_p, float(k),
-                   "McFadden's R²", mcfadden, "eta2", ci_lo, ci_hi, checks, (ci_lo, ci_hi), notes)
+    result = _result("LOGISTIC_REGRESSION", lr_stat, lr_p, float(k),
+                     "McFadden's R²", mcfadden, "eta2", ci_lo, ci_hi, checks, (ci_lo, ci_hi), notes)
+    result["coefficient_table"] = coefficient_table
+    return result
 
 
 # ── survival (§6.5b) and diagnostic accuracy (§6.5c) ─────────────────────────

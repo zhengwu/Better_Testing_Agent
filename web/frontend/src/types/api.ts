@@ -127,6 +127,14 @@ export interface EffectSize {
   ci_upper: number
 }
 
+export interface CoefficientRow {
+  predictor: string
+  estimate: number
+  ci_lower: number
+  ci_upper: number
+  p_value: number
+}
+
 export interface TestResult {
   test_used: string
   statistic: number
@@ -138,6 +146,7 @@ export interface TestResult {
   is_significant: boolean
   power?: number
   notes: string[]
+  coefficient_table?: CoefficientRow[]
 }
 
 // ── Report ────────────────────────────────────────────────────────────────────
