@@ -157,6 +157,35 @@ def test_negative_binomial_regression() -> None:
     assert res.test_used == StatisticalTest.NEGATIVE_BINOMIAL_REGRESSION
 
 
+def test_linear_regression() -> None:
+    rng = random.Random(42)
+    n = 50
+    x1 = [rng.uniform(0, 10) for _ in range(n)]
+    x2 = [rng.uniform(0, 5) for _ in range(n)]
+    y = [2.0 * x1[i] - 1.5 * x2[i] + rng.gauss(0, 1) for i in range(n)]
+    df = pd.DataFrame({"y": y, "x1": x1, "x2": x2})
+    res = execute("LINEAR_REGRESSION", df, "y", None, None, None, None, ["x1", "x2"])
+    assert res.test_used == StatisticalTest.LINEAR_REGRESSION
+    assert isinstance(res.coefficient_table, list) and len(res.coefficient_table) > 0
+    for row in res.coefficient_table:
+        assert set(row.keys()) >= {"predictor", "estimate", "ci_lower", "ci_upper", "p_value"}
+        assert all(math.isfinite(row[k]) for k in ("estimate", "ci_lower", "ci_upper", "p_value"))
+
+
+def test_logistic_regression() -> None:
+    rng = random.Random(7)
+    n = 80
+    x = [rng.uniform(-3, 3) for _ in range(n)]
+    y = [1 if x[i] + rng.gauss(0, 0.5) > 0 else 0 for i in range(n)]
+    df = pd.DataFrame({"y": y, "x": x})
+    res = execute("LOGISTIC_REGRESSION", df, "y", None, "x")
+    assert res.test_used == StatisticalTest.LOGISTIC_REGRESSION
+    assert isinstance(res.coefficient_table, list) and len(res.coefficient_table) > 0
+    for row in res.coefficient_table:
+        assert set(row.keys()) >= {"predictor", "estimate", "ci_lower", "ci_upper", "p_value"}
+        assert all(math.isfinite(row[k]) for k in ("estimate", "ci_lower", "ci_upper", "p_value"))
+
+
 def test_unimplemented_test_is_untestable() -> None:
     """Survival/diagnostic tests are in the enum but not wired — they must not crash."""
     res = execute("LOG_RANK", _two_groups(), "score", "arm", None)

@@ -17,6 +17,10 @@ const TEST_LABELS: Record<string, string> = {
   POISSON_REGRESSION: 'Poisson regression', NEGATIVE_BINOMIAL_REGRESSION: 'Negative binomial regression',
   LINEAR_REGRESSION: 'Multiple linear regression',
   LOGISTIC_REGRESSION: 'Logistic regression',
+  ROC_AUC: 'AUC (ROC)',
+  LOG_RANK: 'Log-rank test',
+  COX_REGRESSION: 'Cox proportional-hazards',
+  BEAST: 'BEAST (adaptive BET)',
 }
 
 const STAT_LABELS: Record<string, string> = {
@@ -28,6 +32,10 @@ const STAT_LABELS: Record<string, string> = {
   MAXBET: 'Z',
   POISSON_REGRESSION: 'z', NEGATIVE_BINOMIAL_REGRESSION: 'z',
   LINEAR_REGRESSION: 'F', LOGISTIC_REGRESSION: 'LR χ²',
+  ROC_AUC: 'Z',
+  LOG_RANK: 'χ²',
+  COX_REGRESSION: 'z',
+  BEAST: 'Z',
 }
 
 function fmt(n: number, decimals = 3) {

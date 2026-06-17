@@ -145,6 +145,28 @@
   {% for note in report.test_result.notes %}
   <p style="font-size:12px;color:#475569;font-family:sans-serif;">{{ note }}</p>
   {% endfor %}
+
+  {% if report.test_result.coefficient_table %}
+  <h3>Per-predictor Coefficients</h3>
+  <table>
+    <tr>
+      <th>Predictor</th>
+      <th>{{ "OR" if report.test_result.test_used == "LOGISTIC_REGRESSION" else "β" }}</th>
+      <th>95% CI</th>
+      <th>p-value</th>
+    </tr>
+    {% for row in report.test_result.coefficient_table %}
+    <tr>
+      <td>{{ row.predictor }}</td>
+      <td>{{ "%.4f"|format(row.estimate) }}</td>
+      <td>[{{ "%.4f"|format(row.ci_lower) }}, {{ "%.4f"|format(row.ci_upper) }}]</td>
+      <td {% if row.p_value < 0.05 %}style="color:#166534;font-weight:600;"{% endif %}>
+        {{ "< 0.001" if row.p_value < 0.001 else "%.3f"|format(row.p_value) }}
+      </td>
+    </tr>
+    {% endfor %}
+  </table>
+  {% endif %}
 </section>
 
 <!-- ASSUMPTION CHECKS -->
